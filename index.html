@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Twins — an ink animation</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden;
+    background: #efece3; /* off-white paper */
+  }
+  #stage { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  .controls {
+    position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 10px; align-items: center; z-index: 5;
+    font-family: Georgia, 'Times New Roman', serif;
+    opacity: 0.25; transition: opacity .3s ease;
+  }
+  .controls:hover { opacity: 1; }
+  .controls button {
+    border: 1.5px solid #171310; background: transparent; color: #171310;
+    font-family: inherit; font-size: 13px; letter-spacing: 1px;
+    padding: 7px 18px; border-radius: 20px; cursor: pointer;
+  }
+  .controls button:hover { background: #171310; color: #efece3; }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div class="controls">
+  <button id="btn-replay">replay</button>
+  <button id="btn-loop">loop: on</button>
+</div>
+<script>
+(function () {
+  'use strict';
+  // ─── stage ────────────────────────────────────────────────────────────
+  const cv = document.getElementById('stage');
+  const ctx = cv.getContext('2d');
+  const DW = 1600, DH = 900;            // design space
+  const GROUND = 700;
+  const INK = '#171310', PAPER = '#efece3';
+  let view = { s: 1, ox: 0, oy: 0 };
+
+  function resize() {
+    const pr = Math.min(2, window.devicePixelRatio || 1);
+    cv.width = innerWidth * pr; cv.height = innerHeight * pr;
+    const s = Math.min(cv.width / DW, cv.height / DH);
+    view = { s, ox: (cv.width - DW * s) / 2, oy: (cv.height - DH * s) / 2 };
+  }
+  addEventListener('resize', resize); resize();
+
+  // paper grain — pre-rendered once, very subtle
+  const grain = document.createElement('canvas');
+  grain.width = 256; grain.height = 256;
+  (function () {
+    const g = grain.getContext('2d');
+    const im = g.createImageData(256, 256);
+    for (let i = 0; i < im.data.length; i += 4) {
+      const v = 225 + Math.random() * 30;
+      im.data[i] = v; im.data[i + 1] = v - 3; im.data[i + 2] = v - 10;
+      im.data[i + 3] = 255;
+    }
+    g.putImageData(im, 0, 0);
+  })();
+
+  // ─── ink helpers — "boiling line" hand-drawn wobble ───────────────────
+  let wobT = 0;                          // quantized so the line "boils" at ~6fps
+  function wob(x, y, id) {
+    const s = Math.sin(x * 0.031 + y * 0.017 + id * 7.7 + wobT * 6.28) +
+              Math.sin(x * 0.011 - y * 0.023 + id * 3.1 + wobT * 12.6);
+    return s * 1.1;
+  }
+  function inkLine(pts, w, id) {
+    ctx.beginPath();
+    for (let i = 0; i < pts.length; i++) {
+      const px = pts[i][0] + wob(pts[i][0], pts[i][1], id);
+      const py = pts[i][1] + wob(pts[i][1], pts[i][0], id + 40);
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.lineWidth = w; ctx.strokeStyle = INK;
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.stroke();
+  }
+  function seg2(x0, y0, a1, l1, a2, l2, face) {
+    // two-bone chain: angles measured from straight-down, + rotates forward
+    const x1 = x0 + Math.sin(a1) * l1 * face, y1 = y0 + Math.cos(a1) * l1;
+    const x2 = x1 + Math.sin(a2) * l2 * face, y2 = y1 + Math.cos(a2) * l2;
+    return [x1, y1, x2, y2];
+  }
+
+  // ─── the girl ─────────────────────────────────────────────────────────
+  // proportions (13-ish): slender, head just under 1/6 of height
+  const B = { torso: 62, neck: 9, head: 15, uarm: 30, farm: 28, thigh: 36, shin: 34, foot: 11 };
+
+  function drawGirl(p, id) {
+    const f = p.face;
+    const hipX = p.x, hipY = p.y - p.bounce;
+    const chestX = hipX + Math.sin(p.lean) * B.torso * f;
+    const chestY = hipY - Math.cos(p.lean) * B.torso;
+    const shX = chestX, shY = chestY + 6;
+    const headA = p.lean + p.headTilt;
+    const headX = chestX + Math.sin(headA) * (B.neck + B.head) * f;
+    const headY = chestY - Math.cos(headA) * (B.neck + B.head);
+
+    // soft ground shadow
+    ctx.save();
+    ctx.globalAlpha = 0.07;
+    ctx.beginPath();
+    ctx.ellipse(hipX, GROUND + 6, 46, 8, 0, 0, Math.PI * 2);
+    ctx.fillStyle = INK; ctx.fill();
+    ctx.restore();
+
+    // limbs: far side first (thinner + slightly lighter), then body, then near
+    const legF = seg2(hipX, hipY, p.lF.hip, B.thigh, p.lF.hip - p.lF.knee, B.shin, f);
+    const legN = seg2(hipX, hipY, p.lN.hip, B.thigh, p.lN.hip - p.lN.knee, B.shin, f);
+    const armF = seg2(shX, shY, p.aF.sh, B.uarm, p.aF.sh + p.aF.el, B.farm, f);
+    const armN = seg2(shX, shY, p.aN.sh, B.uarm, p.aN.sh + p.aN.el, B.farm, f);
+
+    ctx.save(); ctx.globalAlpha = 0.62;
+    inkLine([[shX, shY], [armF[0], armF[1]], [armF[2], armF[3]]], 4.6, id + 1);
+    inkLine([[hipX, hipY], [legF[0], legF[1]], [legF[2], legF[3]],
+             [legF[2] + Math.sin(p.lF.hip - p.lF.knee + 1.5) * B.foot * f, legF[3] + Math.cos(p.lF.hip - p.lF.knee + 1.5) * B.foot * 0.28]], 5.0, id + 2);
+    ctx.restore();
+
+    // torso (a gentle curve, not a stick)
+    inkLine([[hipX, hipY],
+             [(hipX + chestX) / 2 - Math.sin(p.lean) * 3 * f, (hipY + chestY) / 2],
+             [chestX, chestY]], 6.4, id + 3);
+
+    // skirt hint — two short flicks from the hip
+    inkLine([[hipX - 9 * f, hipY + 2], [hipX - 14 * f, hipY + 20]], 3.4, id + 9);
+    inkLine([[hipX + 8 * f, hipY + 2], [hipX + 13 * f, hipY + 20]], 3.4, id + 10);
+
+    // near leg
+    inkLine([[hipX, hipY], [legN[0], legN[1]], [legN[2], legN[3]],
+             [legN[2] + Math.sin(p.lN.hip - p.lN.knee + 1.5) * B.foot * f, legN[3] + Math.cos(p.lN.hip - p.lN.knee + 1.5) * B.foot * 0.28]], 5.6, id + 4);
+
+    // head — open circle
+    ctx.beginPath();
+    ctx.arc(headX + wob(headX, headY, id), headY + wob(headY, headX, id + 5), B.head, 0, Math.PI * 2);
+    ctx.lineWidth = 5.2; ctx.strokeStyle = INK; ctx.stroke();
+
+    // ponytail — the twin marker: girl 0 wears it high-left, girl 1 high-right
+    const tside = p.tailSide;
+    const tx = headX - Math.sin(headA + 0.5 * tside) * B.head * 0.9 * tside;
+    const ty = headY - Math.cos(headA) * B.head * 0.55;
+    inkLine([[tx, ty],
+             [tx - 14 * tside + p.tailSwing, ty - 6],
+             [tx - 24 * tside + p.tailSwing * 1.8, ty + 14],
+             [tx - 20 * tside + p.tailSwing * 2.4, ty + 34]], 4.6, id + 6);
+
+    // face — dots for eyes, a small mouth; laughing = closed happy arcs
+    const ex = headX + Math.sin(headA + 0.9 * f) * B.head * 0.45 * 1;
+    ctx.save();
+    ctx.translate(headX, headY); ctx.rotate(headA * f * 0.4);
+    ctx.fillStyle = INK; ctx.strokeStyle = INK;
+    const eyY = -2, eyX = 5 * f;
+    if (p.express === 'laugh') {
+      ctx.lineWidth = 2.4;
+      ctx.beginPath(); ctx.arc(eyX - 4.5 * f, eyY, 3.2, Math.PI, 0, f < 0); ctx.stroke();
+      ctx.beginPath(); ctx.arc(eyX + 4.5 * f, eyY, 3.2, Math.PI, 0, f < 0); ctx.stroke();
+      ctx.beginPath(); ctx.ellipse(eyX * 0.9, 7, 3.6, 4.6, 0, 0, Math.PI * 2);
+      ctx.lineWidth = 2.6; ctx.stroke();
+    } else if (p.express === 'oh') {
+      ctx.beginPath(); ctx.arc(eyX - 4.5 * f, eyY, 1.8, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(eyX + 4.5 * f, eyY, 1.8, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(eyX * 0.9, 7.5, 3.0, 0, Math.PI * 2);
+      ctx.lineWidth = 2.4; ctx.stroke();
+    } else {
+      ctx.beginPath(); ctx.arc(eyX - 4.5 * f, eyY, 1.8, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(eyX + 4.5 * f, eyY, 1.8, 0, Math.PI * 2); ctx.fill();
+      ctx.lineWidth = 2.2;
+      ctx.beginPath(); ctx.arc(eyX * 0.8, 4, 5.5, 0.35, Math.PI - 0.35); ctx.stroke();
+    }
+    ctx.restore();
+
+    // near arm drawn last (over the torso)
+    inkLine([[shX, shY], [armN[0], armN[1]], [armN[2], armN[3]]], 5.2, id + 7);
+    return { headX, headY, handN: [armN[2], armN[3]], handF: [armF[2], armF[3]] };
+  }
+
+  // ─── pose plumbing ────────────────────────────────────────────────────
+  function pose(o) {
+    return Object.assign({
+      x: 0, y: GROUND - (B.thigh + B.shin), face: 1, lean: 0, bounce: 0,
+      headTilt: 0, tailSwing: 0, tailSide: 1, express: 'smile',
+      aN: { sh: 0.12, el: 0.25 }, aF: { sh: -0.12, el: 0.25 },
+      lN: { hip: 0.06, knee: 0.1 }, lF: { hip: -0.06, knee: 0.1 },
+    }, o);
+  }
+  function lerp(a, b, t) { return a + (b - a) * t; }
+  function mixPose(A, Bp, t) {
+    const m = (a, b) => lerp(a, b, t);
+    return {
+      x: m(A.x, Bp.x), y: m(A.y, Bp.y), face: t < 0.5 ? A.face : Bp.face,
+      lean: m(A.lean, Bp.lean), bounce: m(A.bounce, Bp.bounce),
+      headTilt: m(A.headTilt, Bp.headTilt), tailSwing: m(A.tailSwing, Bp.tailSwing),
+      tailSide: A.tailSide, express: t < 0.5 ? A.express : Bp.express,
+      aN: { sh: m(A.aN.sh, Bp.aN.sh), el: m(A.aN.el, Bp.aN.el) },
+      aF: { sh: m(A.aF.sh, Bp.aF.sh), el: m(A.aF.el, Bp.aF.el) },
+      lN: { hip: m(A.lN.hip, Bp.lN.hip), knee: m(A.lN.knee, Bp.lN.knee) },
+      lF: { hip: m(A.lF.hip, Bp.lF.hip), knee: m(A.lF.knee, Bp.lF.knee) },
+    };
+  }
+  const ease = (t) => t * t * (3 - 2 * t);
+  const clamp01 = (t) => Math.max(0, Math.min(1, t));
+
+  // run cycle generator
+  function runPose(t, x, face, tailSide, freq, express) {
+    const ph = t * freq * Math.PI * 2;
+    const A = 0.85;
+    const kneeN = 0.25 + 0.95 * Math.max(0, Math.sin(ph + 2.4));
+    const kneeF = 0.25 + 0.95 * Math.max(0, Math.sin(ph + Math.PI + 2.4));
+    return pose({
+      x, face, tailSide, express,
+      lean: 0.30, bounce: Math.abs(Math.sin(ph)) * 7,
+      headTilt: -0.06, tailSwing: Math.sin(ph) * 6,
+      lN: { hip: Math.sin(ph) * A, knee: kneeN },
+      lF: { hip: Math.sin(ph + Math.PI) * A, knee: kneeF },
+      aN: { sh: Math.sin(ph + Math.PI) * 0.8, el: 0.9 },
+      aF: { sh: Math.sin(ph) * 0.8, el: 0.9 },
+    });
+  }
+
+  // ─── THE STORY ────────────────────────────────────────────────────────
+  // A (girl 0, ponytail left)  ·  B (girl 1, ponytail right)
+  const T_CLAP = 4.0, T_TURN = 4.8, T_RUNEND = 8.2, T_FALLEN = 9.6,
+        T_LAUGH = 13.0, T_UP = 15.0, T_HUG = 16.2, T_END = 18.5;
+
+  function clapPoses(t) {
+    // facing each other, a patty-cake rhythm with a little bounce
+    const ph = t * 2.1 * Math.PI * 2;
+    const reach = Math.max(0, Math.sin(ph));
+    const b = Math.abs(Math.sin(ph * 0.5)) * 4;
+    const mk = (x, face, tailSide) => pose({
+      x, face, tailSide, bounce: b,
+      lean: 0.06 + reach * 0.10, headTilt: 0.10 * Math.sin(ph * 0.5),
+      tailSwing: Math.sin(ph) * 4, express: 'smile',
+      aN: { sh: 0.55 + reach * 0.85, el: 0.55 + reach * 0.25 },
+      aF: { sh: 0.30 + reach * 1.00, el: 0.75 + reach * 0.15 },
+      lN: { hip: 0.10, knee: 0.14 }, lF: { hip: -0.08, knee: 0.10 },
+    });
+    return [mk(-72, 1, 1), mk(72, -1, -1)];
+  }
+
+  function turnPoses(t) { // both wind up to run right
+    const k = ease(clamp01(t));
+    const from = clapPoses(T_CLAP - 0.001);
+    const toA = runPose(0, -72, 1, 1, 0, 'smile');
+    const toB = runPose(0.1, 72, 1, -1, 0, 'smile');
+    toA.lean = 0.34; toB.lean = 0.34;
+    return [mixPose(from[0], toA, k), mixPose(from[1], toB, k)];
+  }
+
+  // A starts behind but closes the gap — she's catching up to pull the trip
+  function runXA(t) { return -72 + (t / (T_RUNEND - T_TURN)) * 648; }
+  function runXB(t) { return 72 + (t / (T_RUNEND - T_TURN)) * 560; }
+
+  function runPoses(t) {
+    const a = runPose(t, runXA(t), 1, 1, 2.4, 'smile');
+    const b = runPose(t + 0.13, runXB(t), 1, -1, 2.5, 'laugh');
+    return [a, b];
+  }
+
+  function tripPoses(t) { // t local 0..(T_FALLEN-T_RUNEND) — the fall
+    const dur = T_FALLEN - T_RUNEND;
+    const k = clamp01(t / dur);
+    const xA = runXA(T_RUNEND - T_TURN) + 26 * ease(clamp01(k * 2));
+    const xB0 = runXB(T_RUNEND - T_TURN);
+
+    // A: plants, sticks the near leg out low, hand flying to mouth ("oh!")
+    const stick = ease(clamp01(k * 3));
+    const oops = ease(clamp01((k - 0.45) * 2.5));
+    const A = pose({
+      x: xA, face: 1, tailSide: 1, express: oops > 0.4 ? 'oh' : 'smile',
+      lean: 0.10 - 0.10 * stick, bounce: 0,
+      lN: { hip: 0.95 * stick, knee: 0.08 }, lF: { hip: -0.25 * stick, knee: 0.2 },
+      aN: { sh: lerp(0.3, 1.55, oops), el: lerp(0.4, 2.1, oops) }, // hand → mouth
+      aF: { sh: -0.25, el: 0.5 },
+      headTilt: 0.12 * oops, tailSwing: -4 * stick,
+    });
+
+    // B: catches the foot → windmills → sails forward → lands seated
+    const fly = ease(clamp01((k - 0.12) / 0.5));
+    const land = ease(clamp01((k - 0.62) / 0.38));
+    const spin = k * 26;
+    const B2 = pose({
+      x: xB0 + 120 * fly + 30 * land, face: 1, tailSide: -1,
+      y: lerp(lerp(GROUND - (B.thigh + B.shin), GROUND - (B.thigh + B.shin) - 26, fly),
+              GROUND - 26, land),
+      lean: lerp(lerp(0.34, 1.15, fly), 0.22, land),
+      express: land > 0.6 ? 'oh' : 'laugh',
+      headTilt: lerp(0.15 * fly, -0.15, land),
+      tailSwing: 10 * fly - 6 * land,
+      bounce: 0,
+      aN: land < 0.01 ? { sh: Math.sin(spin) * 1.9, el: 0.35 }
+                      : { sh: lerp(Math.sin(spin) * 1.9, 0.9, land), el: lerp(0.35, 0.25, land) },
+      aF: land < 0.01 ? { sh: Math.sin(spin + 2.2) * 1.9, el: 0.35 }
+                      : { sh: lerp(Math.sin(spin + 2.2) * 1.9, 0.55, land), el: lerp(0.35, 0.2, land) },
+      lN: { hip: lerp(lerp(0.5, -0.9, fly), 1.25, land), knee: lerp(0.4, 0.55, land) },
+      lF: { hip: lerp(lerp(-0.4, 0.8, fly), 1.05, land), knee: lerp(0.5, 0.9, land) },
+    });
+    return [A, B2];
+  }
+
+  function laughPoses(t) { // A doubles over; B rocks on the ground
+    const dur = T_LAUGH - T_FALLEN;
+    const k = clamp01(t / dur);
+    const settle = ease(clamp01(k * 2.2));
+    const sh8 = Math.sin(t * 8.5) * settle;         // the shoulder-shake
+    const fallen = tripPoses(T_FALLEN - T_RUNEND - 0.001);
+
+    const walk = ease(clamp01((k - 0.1) / 0.5));
+    const A = pose({
+      x: lerp(fallen[0].x, fallen[1].x - 92, walk), face: 1, tailSide: 1,
+      express: settle > 0.3 ? 'laugh' : 'oh',
+      lean: lerp(0.0, 0.62, settle) + sh8 * 0.045,
+      bounce: Math.abs(sh8) * 2.2,
+      headTilt: 0.22 + sh8 * 0.05, tailSwing: sh8 * 5,
+      aN: { sh: lerp(1.55, 0.95, settle), el: lerp(2.1, 0.45, settle) }, // hands→knees
+      aF: { sh: lerp(-0.25, 0.85, settle), el: lerp(0.5, 0.5, settle) },
+      lN: { hip: 0.16, knee: 0.22 }, lF: { hip: -0.10, knee: 0.16 },
+    });
+
+    const Bsit = fallen[1];
+    const B2 = pose({
+      x: Bsit.x, y: Bsit.y, face: -1, tailSide: -1, express: 'laugh',
+      lean: -0.15 - 0.14 * Math.sin(t * 4.2) * settle,   // rocking back
+      headTilt: -0.30 * settle + sh8 * 0.06,
+      tailSwing: -sh8 * 6, bounce: 0,
+      aN: { sh: 0.75, el: 1.9 },                          // hands at her middle
+      aF: { sh: 0.5, el: 1.7 },
+      lN: { hip: -1.25, knee: 0.55 }, lF: { hip: -1.05, knee: 0.9 },
+    });
+    return [A, B2];
+  }
+
+  function upPoses(t) { // A offers a hand, B rises
+    const dur = T_UP - T_LAUGH;
+    const k = ease(clamp01(t / dur));
+    const from = laughPoses(T_LAUGH - T_FALLEN - 0.001);
+    const A = from[0], Bs = from[1];
+    const midX = (A.x + Bs.x) / 2;
+    const toA = pose({
+      x: midX - 30, face: 1, tailSide: 1, express: 'laugh',
+      lean: 0.14, aN: { sh: 0.85, el: 0.25 }, aF: { sh: 0.2, el: 0.3 },
+      lN: { hip: 0.12, knee: 0.12 }, lF: { hip: -0.1, knee: 0.1 },
+    });
+    const toB = pose({
+      x: midX + 30, face: -1, tailSide: -1, express: 'laugh',
+      lean: 0.14, aN: { sh: 0.85, el: 0.25 }, aF: { sh: 0.15, el: 0.35 },
+      lN: { hip: 0.12, knee: 0.12 }, lF: { hip: -0.1, knee: 0.1 },
+    });
+    return [mixPose(A, toA, k), mixPose(Bs, toB, k)];
+  }
+
+  function hugPoses(t) { // together, arms around, gentle sway
+    const dur = T_HUG - T_UP;
+    const k = ease(clamp01(t / dur));
+    const from = upPoses(T_UP - T_LAUGH - 0.001);
+    const midX = (from[0].x + from[1].x) / 2;
+    const sway = Math.sin((t - dur) * 1.35) * 0.05 * clamp01((t - dur * 0.6));
+    // arms wrap: near arm low around the waist, far arm up over the shoulder —
+    // hands vanish behind the other's body, the way real hugs read in silhouette
+    const toA = pose({
+      x: midX - 31, face: 1, tailSide: 1, express: 'laugh',
+      lean: 0.13 + sway, headTilt: 0.04,
+      aN: { sh: 0.52, el: 0.40 }, aF: { sh: 0.98, el: 0.45 },
+      lN: { hip: 0.05, knee: 0.06 }, lF: { hip: -0.05, knee: 0.06 },
+      tailSwing: sway * 40,
+    });
+    const toB = pose({
+      x: midX + 31, face: -1, tailSide: -1, express: 'laugh',
+      lean: 0.13 - sway, headTilt: 0.04,
+      aN: { sh: 0.52, el: 0.40 }, aF: { sh: 0.98, el: 0.45 },
+      lN: { hip: 0.05, knee: 0.06 }, lF: { hip: -0.05, knee: 0.06 },
+      tailSwing: -sway * 40,
+    });
+    return [mixPose(from[0], toA, k), mixPose(from[1], toB, k)];
+  }
+
+  function posesAt(t) {
+    if (t < T_CLAP) return clapPoses(t);
+    if (t < T_TURN) return turnPoses((t - T_CLAP) / (T_TURN - T_CLAP));
+    if (t < T_RUNEND) return runPoses(t - T_TURN);
+    if (t < T_FALLEN) return tripPoses(t - T_RUNEND);
+    if (t < T_LAUGH) return laughPoses(t - T_FALLEN);
+    if (t < T_UP) return upPoses(t - T_LAUGH);
+    return hugPoses(t - T_UP);
+  }
+
+  // ─── scene ────────────────────────────────────────────────────────────
+  function drawScene(t) {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = PAPER;
+    ctx.fillRect(0, 0, cv.width, cv.height);
+    // grain
+    ctx.save();
+    ctx.globalAlpha = 0.05;
+    const pat = ctx.createPattern(grain, 'repeat');
+    ctx.fillStyle = pat; ctx.fillRect(0, 0, cv.width, cv.height);
+    ctx.restore();
+
+    ctx.setTransform(view.s, 0, 0, view.s, view.ox, view.oy);
+    wobT = Math.floor(t * 6) / 6; // boiling line clock
+
+    // camera drifts with the action; a gentle zoom keeps the girls close
+    const ps = posesAt(t);
+    const cx = (ps[0].x + ps[1].x) / 2;
+    const camX = Math.max(-30, Math.min(700, cx)) * 0.85;
+    const ZOOM = 1.38;
+    ctx.translate(DW / 2, GROUND - 60);
+    ctx.scale(ZOOM, ZOOM);
+    ctx.translate(-DW / 2, -(GROUND - 60));
+
+    // the sun stays put — sketched loosely, indifferent to the drama
+    ctx.save(); ctx.globalAlpha = 0.5;
+    for (let a = 0; a < 3; a++) {
+      ctx.beginPath();
+      ctx.arc(DW / 2 + 260, 175, 46 + a * 2, a * 1.9 + t * 0.03, a * 1.9 + 1.6 + t * 0.03);
+      ctx.lineWidth = 2.4; ctx.strokeStyle = INK; ctx.stroke();
+    }
+    ctx.restore();
+
+    ctx.translate(DW / 2 - camX, 0);
+
+    // ground — one long hand-drawn line + sparse grass flicks
+    const gpts = [];
+    for (let x = -900; x <= 1500; x += 60) gpts.push([x, GROUND + Math.sin(x * 0.01) * 2]);
+    inkLine(gpts, 3.4, 99);
+    for (let x = -860; x < 1480; x += 130) {
+      const gx = x + Math.sin(x * 7.7) * 30;
+      inkLine([[gx, GROUND], [gx - 4, GROUND - 11]], 2.2, 100 + x);
+      inkLine([[gx + 5, GROUND], [gx + 8, GROUND - 8]], 2.0, 101 + x);
+    }
+    // the twins
+    drawGirl(ps[0], 11);
+    drawGirl(ps[1], 57);
+
+    // laughter marks — little ink ticks above heads while they laugh
+    if (t > T_FALLEN + 0.8 && t < T_END) {
+      const burst = Math.sin(t * 8.5) > 0.3 ? 1 : 0;
+      if (burst) {
+        ctx.save(); ctx.globalAlpha = 0.75;
+        [[ps[0].x + 8, GROUND - 205], [ps[1].x - 4, GROUND - (t < T_LAUGH ? 105 : 205)]].forEach((pt, i) => {
+          inkLine([[pt[0] - 12, pt[1]], [pt[0] - 18, pt[1] - 10]], 2.4, 300 + i);
+          inkLine([[pt[0] + 2, pt[1] - 4], [pt[0] + 3, pt[1] - 15]], 2.4, 302 + i);
+          inkLine([[pt[0] + 14, pt[1]], [pt[0] + 21, pt[1] - 9]], 2.4, 304 + i);
+        });
+        ctx.restore();
+      }
+    }
+
+    // title card whisper at the start, fading out
+    if (t < 2.2) {
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, 1 - t / 2.2) * 0.55;
+      ctx.fillStyle = INK;
+      ctx.font = '300 30px Georgia, serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('twins', camX / 0.55 * 0 + 0, 130);
+      ctx.restore();
+    }
+
+    // end fade for the loop
+    const fadeIn = clamp01(t / 0.8);
+    const fadeOut = loop ? clamp01((T_END - t) / 0.8) : 1;
+    const fade = Math.min(fadeIn, fadeOut);
+    if (fade < 1) {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.globalAlpha = 1 - fade;
+      ctx.fillStyle = PAPER;
+      ctx.fillRect(0, 0, cv.width, cv.height);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // ─── clock ────────────────────────────────────────────────────────────
+  let t0 = null, playing = true, loop = true, frozenT = 0, rafId = 0;
+  function frame(ms) {
+    if (!playing) return;
+    if (t0 === null) t0 = ms;
+    let t = (ms - t0) / 1000;
+    if (t >= T_END) {
+      if (loop) { t0 = ms; t = 0; }
+      else { t = T_END - 0.001; playing = false; }
+    }
+    frozenT = t;
+    drawScene(t);
+    if (playing) rafId = requestAnimationFrame(frame);
+  }
+  rafId = requestAnimationFrame(frame);
+
+  document.getElementById('btn-replay').addEventListener('click', () => {
+    t0 = null; if (!playing) { playing = true; requestAnimationFrame(frame); }
+  });
+  const loopBtn = document.getElementById('btn-loop');
+  loopBtn.addEventListener('click', () => {
+    loop = !loop;
+    loopBtn.textContent = 'loop: ' + (loop ? 'on' : 'off');
+    if (!playing) { playing = true; t0 = null; requestAnimationFrame(frame); }
+  });
+
+  // deterministic scrubbing for QA + external control
+  window.TWINS = {
+    seek(sec) {
+      playing = false; cancelAnimationFrame(rafId);
+      frozenT = sec; drawScene(sec); return sec;
+    },
+    play() { playing = true; t0 = null; rafId = requestAnimationFrame(frame); },
+    t() { return frozenT; },
+    DUR: T_END,
+  };
+})();
+</script>
+</body>
+</html>
