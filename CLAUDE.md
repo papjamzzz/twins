@@ -1,7 +1,7 @@
 # Twins — Re-Entry File
 
 ## What This Is
-A pure black-ink-on-paper animation: twin 13-year-old girls play a clapping
+A pure black-ink-on-paper animation: twin girls play a clapping
 game, break into a run, one trips the other, they crack up laughing, and it
 ends in a hug. All off-white (#efece3) and black (#171310), hand-drawn line
 aesthetic. One self-contained file — no frameworks, no build, no server logic.
