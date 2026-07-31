@@ -152,7 +152,6 @@
              [tx - 20 * tside + p.tailSwing * 2.4, ty + 34]], 4.6, id + 6);
 
     // face — dots for eyes, a small mouth; laughing = closed happy arcs
-    const ex = headX + Math.sin(headA + 0.9 * f) * B.head * 0.45 * 1;
     ctx.save();
     ctx.translate(headX, headY); ctx.rotate(headA * f * 0.4);
     ctx.fillStyle = INK; ctx.strokeStyle = INK;
@@ -460,7 +459,7 @@
       ctx.fillStyle = INK;
       ctx.font = '300 30px Georgia, serif';
       ctx.textAlign = 'center';
-      ctx.fillText('twins', camX / 0.55 * 0 + 0, 130);
+      ctx.fillText('twins', 0, 130);
       ctx.restore();
     }
 
